@@ -10,6 +10,7 @@ POSTGRES_DB=jalurbelajar
 POSTGRES_USER=jalurbelajar
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 API_KEY=$(openssl rand -hex 16)
+JWT_SECRET=$(openssl rand -hex 32)
 TUNNEL_TOKEN=
 ENV
 chmod 600 .env

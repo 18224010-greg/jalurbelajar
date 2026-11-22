@@ -10,13 +10,13 @@ Siswa mengikuti tes awal singkat, mendapat jalur belajar, mengerjakan kuis, dan 
 ## Arsitektur
 
 ```
-Internet -> Cloudflare Tunnel -> gateway (Nginx, cek X-API-Key) -> core (FastAPI) -> db (PostgreSQL)
+Internet -> Cloudflare Tunnel -> gateway (Nginx) -> core (FastAPI: API key / JWT) -> db (PostgreSQL)
 ```
 
 | Container | Fungsi | Batas sumber daya |
 |---|---|---|
-| gateway | Pintu masuk tunggal, memeriksa `X-API-Key` | 64 MB, 0.25 CPU |
-| core | Logika JalurBelajar (FastAPI) | 256 MB, 0.5 CPU |
+| gateway | Pintu masuk tunggal, menandai `X-API-Key` yang valid | 64 MB, 0.25 CPU |
+| core | Logika JalurBelajar dan autentikasi (FastAPI) | 256 MB, 0.5 CPU |
 | db | PostgreSQL, tidak dibuka ke luar | 256 MB, 0.5 CPU |
 | tunnel | Cloudflare Tunnel (profil `tunnel`) | 128 MB, 0.25 CPU |
 
@@ -36,15 +36,16 @@ Tunnel ke internet (setelah `TUNNEL_TOKEN` diisi di `.env`):
 docker compose --profile tunnel up -d
 ```
 
-## Autentikasi
+## Cara mendapat akses
 
-Semua endpoint kecuali `/api/health` dan `/api/docs` wajib header:
+1. Cari entri `pawm-tst-jaya` di API Registry kelas (spreadsheet bersama) untuk URL dan dokumentasinya.
+2. Minta **API key** ke kelompok PAWM TST Jaya (K02) lewat kontak anggota yang tercantum di API Registry atau grup kelas. API key tidak dicantumkan di dokumen ini.
+3. Sertakan header `X-API-Key: <API key>` pada setiap permintaan (kecuali `/api/health`, `/api/docs`, `/api/auth/register`, dan `/api/auth/login`).
+4. Tanpa key atau dengan key yang salah, layanan menjawab `401 Unauthorized`.
 
-```
-X-API-Key: <API key dari pemilik layanan>
-```
+Pengguna aplikasi tidak memakai API key. Mereka mendaftar lewat `POST /api/auth/register`, masuk lewat `POST /api/auth/login`, lalu mengirim `Authorization: Bearer <token>` (JWT, berlaku 7 hari). Pengguna login hanya dapat mengakses data miliknya sendiri; `student_id` diisi otomatis dari token (atau gunakan `me`).
 
-Tanpa key yang benar, jawabannya `401`.
+Untuk menguji di Postman atau REST Client: impor kontrak OpenAPI dari `https://pawm-tst-jaya.stei.site/api/openapi.json`, atau buka Swagger di `/api/docs`.
 
 ## Endpoint
 
@@ -53,6 +54,9 @@ Base URL: `https://pawm-tst-jaya.stei.site/api`
 | Method | Path | Fungsi |
 |---|---|---|
 | GET | `/health` | Cek layanan hidup (tanpa key) |
+| POST | `/auth/register` | Daftar akun pengguna (tanpa key) |
+| POST | `/auth/login` | Masuk, menerima token JWT (tanpa key) |
+| GET | `/auth/me` | Profil pengguna yang sedang login (Bearer) |
 | GET | `/modules?topic=&level=` | Daftar modul. `level`: pemula, menengah, lanjut |
 | GET | `/modules/{id}/quiz` | Kuis sebuah modul (tanpa kunci jawaban) |
 | POST | `/quizzes/{id}/submit` | Kirim jawaban, terima skor |
@@ -69,7 +73,31 @@ curl -X POST -H "X-API-Key: KUNCI" -H "Content-Type: application/json" \
   https://pawm-tst-jaya.stei.site/api/quizzes/1/submit
 ```
 
+Contoh jawaban `GET /api/modules?topic=python`:
+
+```
+[{"id":1,"topic":"python","level":"pemula","title":"Variabel dan Tipe Data",
+  "description":"Menyimpan nilai dalam variabel dan mengenal int, float, str, bool."}, ...]
+```
+
+Contoh jawaban `POST /api/quizzes/1/submit`:
+
+```
+{"attempt_id":1,"student_id":"siswa-1","quiz_id":1,"score":3,"total":3,
+ "percentage":100,"passed":true,
+ "results":[{"question_id":1,"correct":true}, ...]}
+```
+
+Kode status: `200` berhasil, `401` API key salah atau tidak ada, `404` data tidak ditemukan,
+`422` parameter atau isi permintaan tidak valid.
+
 Kontrak lengkap (OpenAPI) tersedia di `/api/openapi.json`.
+
+## Aturan penilaian kuis
+
+Satu kuis memiliki beberapa pertanyaan pilihan ganda. Skor adalah jumlah jawaban benar.
+Siswa dinyatakan lulus modul bila persentase 70% ke atas. Rekomendasi menampilkan modul belum tuntas
+pada level terendah yang masih tersisa dalam topik yang diminta (pemula, menengah, lanjut).
 
 ## Catatan keamanan
 

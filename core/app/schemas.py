@@ -30,7 +30,10 @@ class AnswerIn(BaseModel):
 
 
 class SubmitIn(BaseModel):
-    student_id: str = Field(min_length=1, max_length=64)
+    student_id: str | None = Field(
+        None, min_length=1, max_length=64,
+        description="Wajib untuk X-API-Key. Untuk pengguna login diisi otomatis dari token.",
+    )
     answers: list[AnswerIn] = Field(min_length=1)
 
 
@@ -71,3 +74,31 @@ class ProgressOut(BaseModel):
 class RecommendationOut(BaseModel):
     module: ModuleOut
     reason: str
+
+
+_EMAIL = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+
+class RegisterIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    email: str = Field(max_length=120, pattern=_EMAIL)
+    password: str = Field(min_length=6, max_length=72)
+
+
+class LoginIn(BaseModel):
+    email: str = Field(max_length=120)
+    password: str = Field(max_length=72)
+
+
+class UserOut(BaseModel):
+    id: int
+    name: str
+    email: str
+    student_id: str
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: UserOut

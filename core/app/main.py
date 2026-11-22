@@ -3,13 +3,21 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.security import APIKeyHeader
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, selectinload
 
 from . import models, schemas
 from .db import Base, SessionLocal, engine, get_db
+from .security import (
+    JWT_EXPIRE_SECONDS,
+    Principal,
+    create_token,
+    get_principal,
+    hash_password,
+    verify_password,
+)
 from .seed import seed_if_empty
 
 PASS_PERCENTAGE = 70
@@ -31,21 +39,22 @@ async def lifespan(_: FastAPI):
     yield
 
 
-# Pemeriksaan API key sebenarnya dilakukan gateway (Nginx).
-# Skema ini hanya agar tombol "Authorize" muncul di dokumentasi /docs.
-_api_key_doc = APIKeyHeader(name="X-API-Key", auto_error=False)
-
 app = FastAPI(
     title="JalurBelajar API",
     version="1.0.0",
     description=(
         "Layanan inti JalurBelajar: modul belajar, kuis, rekomendasi, dan progres siswa. "
-        "Semua endpoint (kecuali /health dan /docs) memerlukan header `X-API-Key`. "
-        "Data di sini adalah data uji."
+        "Dua cara akses: (1) kelompok lain memakai header `X-API-Key`; "
+        "(2) pengguna aplikasi mendaftar/login lewat `/auth/*` lalu memakai "
+        "`Authorization: Bearer <token>`. Hanya /health, /docs, /auth/register, dan "
+        "/auth/login yang terbuka. Data di sini adalah data uji."
     ),
     root_path=os.getenv("ROOT_PATH", ""),
     lifespan=lifespan,
-    dependencies=[Depends(_api_key_doc)],
+)
+# Aplikasi mobile native tidak butuh CORS; ini hanya untuk uji lewat browser (Expo web).
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 
 
@@ -59,14 +68,78 @@ def _module_out(m: models.Module) -> schemas.ModuleOut:
     )
 
 
-@app.get("/health", tags=["Sistem"], dependencies=[])
+@app.get("/health", tags=["Sistem"])
 def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
     return {"status": "ok", "service": "jalurbelajar-core"}
 
 
+
+def _student_id(user_id: int) -> str:
+    return f"user-{user_id}"
+
+
+def _user_out(u: models.User) -> schemas.UserOut:
+    return schemas.UserOut(id=u.id, name=u.name, email=u.email, student_id=_student_id(u.id))
+
+
+@app.post("/auth/register", response_model=schemas.UserOut, status_code=201, tags=["Akun"])
+def register(body: schemas.RegisterIn, db: Session = Depends(get_db)):
+    user = models.User(
+        name=body.name.strip(),
+        email=body.email.strip().lower(),
+        password_hash=hash_password(body.password),
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Email sudah terdaftar")
+    return _user_out(user)
+
+
+@app.post("/auth/login", response_model=schemas.TokenOut, tags=["Akun"])
+def login(body: schemas.LoginIn, db: Session = Depends(get_db)):
+    user = db.scalars(
+        select(models.User).where(models.User.email == body.email.strip().lower())
+    ).first()
+    if user is None or not verify_password(body.password, user.password_hash):
+        raise HTTPException(401, "Email atau password salah")
+    return schemas.TokenOut(
+        access_token=create_token(user.id),
+        expires_in=JWT_EXPIRE_SECONDS,
+        user=_user_out(user),
+    )
+
+
+@app.get("/auth/me", response_model=schemas.UserOut, tags=["Akun"])
+def me(p: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    if p.kind != "user":
+        raise HTTPException(403, "Endpoint ini hanya untuk pengguna yang login")
+    user = db.get(models.User, p.user_id)
+    if user is None:
+        raise HTTPException(401, "Pengguna tidak ditemukan")
+    return _user_out(user)
+
+
+def _resolve_student(p: Principal, supplied: str | None, *, required: bool) -> str | None:
+    """Pengguna login hanya boleh bertindak atas dirinya; X-API-Key wajib menyebut student_id."""
+    if p.kind == "user":
+        own = _student_id(p.user_id)
+        if supplied not in (None, "me", own):
+            raise HTTPException(403, "Pengguna hanya boleh mengakses data miliknya sendiri")
+        return own
+    if supplied in (None, "me"):
+        if required:
+            raise HTTPException(422, "student_id wajib diisi saat memakai X-API-Key")
+        return None
+    return supplied
+
+
 @app.get("/modules", response_model=list[schemas.ModuleOut], tags=["Modul"])
 def list_modules(
+    p: Principal = Depends(get_principal),
     topic: str | None = Query(None, description="Contoh: python, matematika"),
     level: str | None = Query(None, description="pemula | menengah | lanjut"),
     db: Session = Depends(get_db),
@@ -82,7 +155,9 @@ def list_modules(
 
 
 @app.get("/modules/{module_id}/quiz", response_model=schemas.QuizOut, tags=["Kuis"])
-def get_quiz(module_id: int, db: Session = Depends(get_db)):
+def get_quiz(
+    module_id: int, p: Principal = Depends(get_principal), db: Session = Depends(get_db)
+):
     stmt = (
         select(models.Quiz)
         .where(models.Quiz.module_id == module_id)
@@ -103,7 +178,13 @@ def get_quiz(module_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/quizzes/{quiz_id}/submit", response_model=schemas.SubmitOut, tags=["Kuis"])
-def submit_quiz(quiz_id: int, body: schemas.SubmitIn, db: Session = Depends(get_db)):
+def submit_quiz(
+    quiz_id: int,
+    body: schemas.SubmitIn,
+    p: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    student_id = _resolve_student(p, body.student_id, required=True)
     quiz = db.scalars(
         select(models.Quiz)
         .where(models.Quiz.id == quiz_id)
@@ -125,14 +206,14 @@ def submit_quiz(quiz_id: int, body: schemas.SubmitIn, db: Session = Depends(get_
     score = sum(r.correct for r in results)
     total = len(key)
     attempt = models.Attempt(
-        student_id=body.student_id, quiz_id=quiz.id, score=score, total=total
+        student_id=student_id, quiz_id=quiz.id, score=score, total=total
     )
     db.add(attempt)
     db.commit()
     pct = _percentage(score, total)
     return schemas.SubmitOut(
         attempt_id=attempt.id,
-        student_id=body.student_id,
+        student_id=student_id,
         quiz_id=quiz.id,
         score=score,
         total=total,
@@ -158,7 +239,10 @@ def _attempts(db: Session, student_id: str):
     response_model=schemas.ProgressOut,
     tags=["Progres"],
 )
-def student_progress(student_id: str, db: Session = Depends(get_db)):
+def student_progress(
+    student_id: str, p: Principal = Depends(get_principal), db: Session = Depends(get_db)
+):
+    student_id = _resolve_student(p, student_id, required=True)
     rows = _attempts(db, student_id)
     attempts = [
         schemas.AttemptOut(
@@ -191,8 +275,10 @@ def student_progress(student_id: str, db: Session = Depends(get_db)):
 def recommendations(
     topic: str = Query(..., description="Topik yang ingin dipelajari"),
     student_id: str | None = Query(None, description="Jika kosong, mulai dari level pemula"),
+    p: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
+    student_id = _resolve_student(p, student_id, required=False)
     modules = list(
         db.scalars(
             select(models.Module)
