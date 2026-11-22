@@ -1,11 +1,12 @@
 # JalurBelajar
 
 Microservice backend JalurBelajar (Tugas Besar TST × PWAM, tema Education & Learning Tools).
-Siswa mengikuti tes awal singkat, mendapat jalur belajar, mengerjakan kuis, dan menerima rekomendasi modul.
+Siswa memilih topik, mengerjakan kuis per modul, dan menerima rekomendasi modul berikutnya berdasarkan hasil kuis.
 
 - Kelompok: PAWM TST Jaya (K02)
 - URL publik: https://pawm-tst-jaya.stei.site/api
 - Dokumentasi interaktif (Swagger): https://pawm-tst-jaya.stei.site/api/docs
+- Repositori aplikasi mobile (klien layanan ini): https://github.com/18224010-greg/jalurbelajar-app
 
 ## Arsitektur
 
@@ -88,8 +89,9 @@ Contoh jawaban `POST /api/quizzes/1/submit`:
  "results":[{"question_id":1,"correct":true}, ...]}
 ```
 
-Kode status: `200` berhasil, `401` API key salah atau tidak ada, `404` data tidak ditemukan,
-`422` parameter atau isi permintaan tidak valid.
+Kode status: `200` berhasil, `201` akun dibuat, `401` API key atau token salah atau tidak ada,
+`403` pengguna login mengakses data milik orang lain, `404` data tidak ditemukan,
+`409` email sudah terdaftar, `422` parameter atau isi permintaan tidak valid.
 
 Kontrak lengkap (OpenAPI) tersedia di `/api/openapi.json`.
 
