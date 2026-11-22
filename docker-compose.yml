@@ -1,0 +1,70 @@
+# JalurBelajar - microservice di STB. Jalankan: docker compose up -d --build
+# Rahasia ada di file .env (dibuat oleh ./setup.sh), TIDAK masuk GitHub.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Sengaja tanpa "ports": database tidak boleh terbuka ke luar.
+
+  core:
+    build: ./core
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      ROOT_PATH: /api
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    mem_limit: 64m
+    cpus: 0.25
+    environment:
+      API_KEY: ${API_KEY:?API_KEY belum diisi di .env}
+    volumes:
+      - ./gateway/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "80:80"
+    depends_on:
+      core:
+        condition: service_healthy
+
+  # Tunnel ke internet. Tidak ikut menyala sampai kamu jalankan:
+  #   docker compose --profile tunnel up -d
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      - gateway
+    profiles: ["tunnel"]
+
+volumes:
+  db_data:
